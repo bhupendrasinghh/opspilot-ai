@@ -1,5 +1,5 @@
 from datetime import datetime
-from typing import List
+from typing import List, Literal
 
 from fastapi import Depends, FastAPI, HTTPException
 from pydantic import BaseModel, ConfigDict
@@ -22,12 +22,33 @@ app = FastAPI(
 class IncidentCreate(BaseModel):
     title: str
     description: str
-    severity: str
+    severity: Literal[
+        "low",
+        "medium",
+        "high",
+        "critical",
+    ]
     service_name: str
 
-
 class IncidentStatusUpdate(BaseModel):
-    status: str
+    status: Literal[
+        "open",
+        "investigating",
+        "resolved",
+        "closed",
+    ]
+
+class AlertCreate(BaseModel):
+    alert_name: str
+    description: str
+    severity: Literal[
+        "low",
+        "medium",
+        "high",
+        "critical",
+    ]
+    service_name: str
+    source: str
 
 
 class IncidentResponse(BaseModel):
@@ -88,8 +109,16 @@ def create_incident(
     db.commit()
     db.refresh(new_incident)
 
-    return new_incident
+    creation_event = IncidentEventDB(
+        incident_id=new_incident.id,
+        message="Incident created automatically.",
+        created_by="system",
+    )
 
+    db.add(creation_event)
+    db.commit()
+
+    return new_incident
 
 @app.get("/incidents", response_model=List[IncidentResponse])
 def get_incidents(db: Session = Depends(get_db)):
@@ -118,6 +147,11 @@ def get_incident_by_id(
 
     return incident
 
+
+@app.patch(
+    "/incidents/{incident_id}/status",
+    response_model=IncidentResponse
+)
 
 @app.patch(
     "/incidents/{incident_id}/status",
@@ -153,13 +187,23 @@ def update_incident_status(
             detail="Incident not found"
         )
 
+    old_status = incident.status
     incident.status = status_data.status
 
+    status_event = IncidentEventDB(
+        incident_id=incident.id,
+        message=(
+            f"Status changed from {old_status} "
+            f"to {status_data.status}."
+        ),
+        created_by="system",
+    )
+
+    db.add(status_event)
     db.commit()
     db.refresh(incident)
 
     return incident
-
 
 @app.post(
     "/incidents/{incident_id}/events",
@@ -220,3 +264,37 @@ def get_incident_events(
         .filter(IncidentEventDB.incident_id == incident_id)
         .all()
     )
+
+@app.post(
+    "/alerts",
+    response_model=IncidentResponse
+)
+def receive_alert(
+    alert_data: AlertCreate,
+    db: Session = Depends(get_db)
+):
+    new_incident = IncidentDB(
+        title=alert_data.alert_name,
+        description=alert_data.description,
+        severity=alert_data.severity,
+        service_name=alert_data.service_name,
+        status="open",
+    )
+
+    db.add(new_incident)
+    db.commit()
+    db.refresh(new_incident)
+
+    alert_event = IncidentEventDB(
+        incident_id=new_incident.id,
+        message=(
+            f"Incident created from alert source: "
+            f"{alert_data.source}"
+        ),
+        created_by="alert-system",
+    )
+
+    db.add(alert_event)
+    db.commit()
+
+    return new_incident
